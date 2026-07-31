@@ -1,0 +1,17 @@
+{
+  "rule_id": "R13",
+  "name": "Monthly Payment Calculation",
+  "description": "Compute monthly mortgage payment using standard amortization formula: P * r(1+r)^n / ((1+r)^n - 1).",
+  "inputs": ["final_rate", "loan_amount", "loan_term_years"],
+  "outputs": ["monthly_payment"],
+  "conditions": [
+    {"field": "final_rate", "op": "gt", "value": 0},
+    {"field": "loan_term_years", "op": "gt", "value": 0}
+  ],
+  "action": {
+    "type": "compute",
+    "expression": "(loan_amount * (final_rate / 12) * (1 + final_rate / 12) ** (loan_term_years * 12)) / ((1 + final_rate / 12) ** (loan_term_years * 12) - 1)"
+  },
+  "priority": 4,
+  "tags": ["payment", "amortization"]
+}

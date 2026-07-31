@@ -1,0 +1,21 @@
+{
+  "rule_id": "R09",
+  "name": "Credit Score Rate Adjustment",
+  "description": "Adjust rate based on credit tier. Better credit = lower rate (reward for creditworthiness).",
+  "inputs": ["credit_tier"],
+  "outputs": ["credit_rate_adj"],
+  "conditions": [],
+  "action": {
+    "type": "lookup",
+    "entries": [
+      {"condition": {"field": "credit_tier", "op": "eq", "value": "EXCEPTIONAL"}, "result": -0.0050},
+      {"condition": {"field": "credit_tier", "op": "eq", "value": "VERY_GOOD"},   "result": -0.0025},
+      {"condition": {"field": "credit_tier", "op": "eq", "value": "GOOD"},        "result":  0.0000},
+      {"condition": {"field": "credit_tier", "op": "eq", "value": "FAIR"},        "result":  0.0075},
+      {"condition": {"field": "credit_tier", "op": "eq", "value": "POOR"},        "result":  0.0200}
+    ],
+    "default_result": 0.0100
+  },
+  "priority": 6,
+  "tags": ["rate", "adjustment", "credit"]
+}

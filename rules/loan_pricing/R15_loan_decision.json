@@ -1,0 +1,43 @@
+{
+  "rule_id": "R15",
+  "name": "Final Loan Decision",
+  "description": "Final approve/decline/review decision based on eligibility and composite risk score.",
+  "inputs": ["is_eligible", "risk_score"],
+  "outputs": ["decision", "decision_reason"],
+  "conditions": [],
+  "action": {
+    "type": "decision",
+    "branches": [
+      {
+        "conditions": [
+          {"field": "is_eligible", "op": "eq",  "value": false}
+        ],
+        "result": "DECLINED"
+      },
+      {
+        "conditions": [
+          {"field": "is_eligible", "op": "eq",  "value": true},
+          {"field": "risk_score",  "op": "lte", "value": 30}
+        ],
+        "result": "APPROVED"
+      },
+      {
+        "conditions": [
+          {"field": "is_eligible", "op": "eq",  "value": true},
+          {"field": "risk_score",  "op": "lte", "value": 60}
+        ],
+        "result": "APPROVED"
+      },
+      {
+        "conditions": [
+          {"field": "is_eligible", "op": "eq",  "value": true},
+          {"field": "risk_score",  "op": "lte", "value": 75}
+        ],
+        "result": "MANUAL_REVIEW"
+      }
+    ],
+    "default_result": "DECLINED"
+  },
+  "priority": 1,
+  "tags": ["decision", "final", "output"]
+}

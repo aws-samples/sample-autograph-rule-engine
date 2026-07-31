@@ -1,0 +1,35 @@
+{
+  "rule_id": "R06",
+  "name": "Check Basic Eligibility",
+  "description": "Applicant is eligible if credit tier is not POOR and LTV tier is not VERY_HIGH.",
+  "inputs": ["credit_tier", "ltv_tier"],
+  "outputs": ["is_eligible"],
+  "conditions": [],
+  "action": {
+    "type": "decision",
+    "branches": [
+      {
+        "conditions": [
+          {"field": "credit_tier", "op": "eq", "value": "POOR"}
+        ],
+        "result": false
+      },
+      {
+        "conditions": [
+          {"field": "ltv_tier", "op": "eq", "value": "VERY_HIGH"}
+        ],
+        "result": false
+      },
+      {
+        "conditions": [
+          {"field": "credit_tier", "op": "neq", "value": "POOR"},
+          {"field": "ltv_tier",    "op": "neq", "value": "VERY_HIGH"}
+        ],
+        "result": true
+      }
+    ],
+    "default_result": false
+  },
+  "priority": 7,
+  "tags": ["eligibility", "gate"]
+}

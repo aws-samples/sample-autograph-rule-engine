@@ -1,0 +1,19 @@
+{
+  "rule_id": "R03",
+  "name": "Classify LTV Tier",
+  "description": "Classify LTV ratio into risk tiers: LOW (<0.6), MEDIUM (0.6-0.8), HIGH (0.8-0.95), VERY_HIGH (>=0.95).",
+  "inputs": ["ltv_ratio"],
+  "outputs": ["ltv_tier"],
+  "conditions": [],
+  "action": {
+    "type": "lookup",
+    "entries": [
+      {"condition": {"field": "ltv_ratio", "op": "lt",  "value": 0.60}, "result": "LOW"},
+      {"condition": {"field": "ltv_ratio", "op": "lt",  "value": 0.80}, "result": "MEDIUM"},
+      {"condition": {"field": "ltv_ratio", "op": "lt",  "value": 0.95}, "result": "HIGH"}
+    ],
+    "default_result": "VERY_HIGH"
+  },
+  "priority": 8,
+  "tags": ["classification", "ltv"]
+}

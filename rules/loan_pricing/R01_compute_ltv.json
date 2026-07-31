@@ -1,0 +1,16 @@
+{
+  "rule_id": "R01",
+  "name": "Compute LTV Ratio",
+  "description": "Loan-to-Value ratio: what fraction of the property value is being borrowed. Higher LTV = more risk.",
+  "inputs": ["loan_amount", "property_value"],
+  "outputs": ["ltv_ratio"],
+  "conditions": [
+    {"field": "property_value", "op": "gt", "value": 0}
+  ],
+  "action": {
+    "type": "compute",
+    "expression": "loan_amount / property_value"
+  },
+  "priority": 10,
+  "tags": ["ratio", "core"]
+}

@@ -1,0 +1,58 @@
+{
+  "rule_id": "R07",
+  "name": "Base Rate Lookup",
+  "description": "Look up the base interest rate from loan type and term. Rates reflect current market benchmarks.",
+  "inputs": ["loan_type", "loan_term_years"],
+  "outputs": ["base_rate"],
+  "conditions": [],
+  "action": {
+    "type": "decision",
+    "branches": [
+      {
+        "conditions": [
+          {"field": "loan_type", "op": "eq", "value": "CONVENTIONAL"},
+          {"field": "loan_term_years", "op": "eq", "value": 30}
+        ],
+        "result": 0.0685
+      },
+      {
+        "conditions": [
+          {"field": "loan_type", "op": "eq", "value": "CONVENTIONAL"},
+          {"field": "loan_term_years", "op": "eq", "value": 15}
+        ],
+        "result": 0.0620
+      },
+      {
+        "conditions": [
+          {"field": "loan_type", "op": "eq", "value": "FHA"},
+          {"field": "loan_term_years", "op": "eq", "value": 30}
+        ],
+        "result": 0.0670
+      },
+      {
+        "conditions": [
+          {"field": "loan_type", "op": "eq", "value": "FHA"},
+          {"field": "loan_term_years", "op": "eq", "value": 15}
+        ],
+        "result": 0.0605
+      },
+      {
+        "conditions": [
+          {"field": "loan_type", "op": "eq", "value": "VA"},
+          {"field": "loan_term_years", "op": "eq", "value": 30}
+        ],
+        "result": 0.0655
+      },
+      {
+        "conditions": [
+          {"field": "loan_type", "op": "eq", "value": "JUMBO"},
+          {"field": "loan_term_years", "op": "eq", "value": 30}
+        ],
+        "result": 0.0720
+      }
+    ],
+    "default_result": 0.0700
+  },
+  "priority": 8,
+  "tags": ["rate", "base", "lookup"]
+}

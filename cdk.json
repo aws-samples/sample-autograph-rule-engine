@@ -1,0 +1,12 @@
+{
+  "app": "python infra/app.py",
+  "watch": {
+    "include": ["infra/**", "src/**"],
+    "exclude": ["**/__pycache__", "*.egg-info", ".venv"]
+  },
+  "context": {
+    "@aws-cdk/aws-lambda:recognizeLayerVersion": true,
+    "@aws-cdk/core:checkSecretUsage": true,
+    "@aws-cdk/core:enablePartitionLiterals": true
+  }
+}
