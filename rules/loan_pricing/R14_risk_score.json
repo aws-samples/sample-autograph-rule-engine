@@ -1,0 +1,70 @@
+{
+  "rule_id": "R14",
+  "name": "Composite Risk Score",
+  "description": "Compute a 0-100 composite risk score from LTV tier, credit tier, DTI tier, and employment status. Higher = riskier.",
+  "inputs": ["ltv_tier", "credit_tier", "dti_tier", "employment_status"],
+  "outputs": ["risk_score"],
+  "conditions": [],
+  "action": {
+    "type": "decision",
+    "branches": [
+      {
+        "conditions": [
+          {"field": "credit_tier",       "op": "eq", "value": "EXCEPTIONAL"},
+          {"field": "ltv_tier",          "op": "eq", "value": "LOW"},
+          {"field": "dti_tier",          "op": "eq", "value": "LOW"},
+          {"field": "employment_status", "op": "eq", "value": "FULL_TIME"}
+        ],
+        "result": 10
+      },
+      {
+        "conditions": [
+          {"field": "credit_tier",       "op": "in", "value": ["EXCEPTIONAL", "VERY_GOOD"]},
+          {"field": "ltv_tier",          "op": "in", "value": ["LOW", "MEDIUM"]},
+          {"field": "dti_tier",          "op": "in", "value": ["LOW", "ACCEPTABLE"]},
+          {"field": "employment_status", "op": "in", "value": ["FULL_TIME", "RETIRED"]}
+        ],
+        "result": 25
+      },
+      {
+        "conditions": [
+          {"field": "credit_tier", "op": "in", "value": ["GOOD", "VERY_GOOD"]},
+          {"field": "ltv_tier",    "op": "in", "value": ["LOW", "MEDIUM"]},
+          {"field": "dti_tier",    "op": "in", "value": ["LOW", "ACCEPTABLE"]}
+        ],
+        "result": 35
+      },
+      {
+        "conditions": [
+          {"field": "credit_tier", "op": "eq", "value": "GOOD"},
+          {"field": "ltv_tier",    "op": "in", "value": ["MEDIUM", "HIGH"]},
+          {"field": "dti_tier",    "op": "in", "value": ["ACCEPTABLE", "ELEVATED"]}
+        ],
+        "result": 50
+      },
+      {
+        "conditions": [
+          {"field": "credit_tier", "op": "eq", "value": "FAIR"},
+          {"field": "ltv_tier",    "op": "in", "value": ["MEDIUM", "HIGH"]},
+          {"field": "dti_tier",    "op": "in", "value": ["ELEVATED", "HIGH"]}
+        ],
+        "result": 70
+      },
+      {
+        "conditions": [
+          {"field": "credit_tier", "op": "eq", "value": "POOR"}
+        ],
+        "result": 90
+      },
+      {
+        "conditions": [
+          {"field": "ltv_tier", "op": "eq", "value": "VERY_HIGH"}
+        ],
+        "result": 85
+      }
+    ],
+    "default_result": 55
+  },
+  "priority": 5,
+  "tags": ["risk", "scoring"]
+}

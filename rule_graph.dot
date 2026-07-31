@@ -1,0 +1,129 @@
+// Loan Pricing Rule Dependency Graph
+digraph RuleEngine {
+	bgcolor=white concentrate=false dpi=150 fontname=Helvetica nodesep=1.2 pad=1.0 rankdir=LR ranksep=3.0 size="30,20!" splines=curved
+	node [fontname=Helvetica fontsize=22 height=1.6 margin="0.5,0.3" penwidth=3 shape=box style="filled,rounded" width=4]
+	edge [arrowhead=vee arrowsize=1.4 color="#555555" fontcolor="#222222" fontname=Helvetica fontsize=18 penwidth=2.5]
+	{
+		rank=same
+		PAYLOAD_credit_score [label="📥 credit_score" color="#c0392b" fillcolor="#f39c12" fontcolor="#ffffff" fontsize=20 height=0.9 margin="0.3,0.2" shape=parallelogram style="filled,rounded" width=3.5]
+		PAYLOAD_employment_status [label="📥 employment_status" color="#c0392b" fillcolor="#f39c12" fontcolor="#ffffff" fontsize=20 height=0.9 margin="0.3,0.2" shape=parallelogram style="filled,rounded" width=3.5]
+		PAYLOAD_loan_amount [label="📥 loan_amount" color="#c0392b" fillcolor="#f39c12" fontcolor="#ffffff" fontsize=20 height=0.9 margin="0.3,0.2" shape=parallelogram style="filled,rounded" width=3.5]
+		PAYLOAD_loan_term_years [label="📥 loan_term_years" color="#c0392b" fillcolor="#f39c12" fontcolor="#ffffff" fontsize=20 height=0.9 margin="0.3,0.2" shape=parallelogram style="filled,rounded" width=3.5]
+		PAYLOAD_loan_type [label="📥 loan_type" color="#c0392b" fillcolor="#f39c12" fontcolor="#ffffff" fontsize=20 height=0.9 margin="0.3,0.2" shape=parallelogram style="filled,rounded" width=3.5]
+		PAYLOAD_monthly_debt [label="📥 monthly_debt" color="#c0392b" fillcolor="#f39c12" fontcolor="#ffffff" fontsize=20 height=0.9 margin="0.3,0.2" shape=parallelogram style="filled,rounded" width=3.5]
+		PAYLOAD_monthly_income [label="📥 monthly_income" color="#c0392b" fillcolor="#f39c12" fontcolor="#ffffff" fontsize=20 height=0.9 margin="0.3,0.2" shape=parallelogram style="filled,rounded" width=3.5]
+		PAYLOAD_property_value [label="📥 property_value" color="#c0392b" fillcolor="#f39c12" fontcolor="#ffffff" fontsize=20 height=0.9 margin="0.3,0.2" shape=parallelogram style="filled,rounded" width=3.5]
+	}
+	PAYLOAD_credit_score -> R04 [arrowsize=1.2 color="#e67e22" fontcolor="#e67e22" penwidth=2.0 style=dashed xlabel=credit_score]
+	PAYLOAD_employment_status -> R11 [arrowsize=1.2 color="#e67e22" fontcolor="#e67e22" penwidth=2.0 style=dashed xlabel=employment_status]
+	PAYLOAD_loan_amount -> R01 [arrowsize=1.2 color="#e67e22" fontcolor="#e67e22" penwidth=2.0 style=dashed xlabel=loan_amount]
+	PAYLOAD_property_value -> R01 [arrowsize=1.2 color="#e67e22" fontcolor="#e67e22" penwidth=2.0 style=dashed xlabel=property_value]
+	PAYLOAD_loan_type -> R07 [arrowsize=1.2 color="#e67e22" fontcolor="#e67e22" penwidth=2.0 style=dashed xlabel=loan_type]
+	PAYLOAD_loan_term_years -> R07 [arrowsize=1.2 color="#e67e22" fontcolor="#e67e22" penwidth=2.0 style=dashed xlabel=loan_term_years]
+	PAYLOAD_monthly_debt -> R02 [arrowsize=1.2 color="#e67e22" fontcolor="#e67e22" penwidth=2.0 style=dashed xlabel=monthly_debt]
+	PAYLOAD_monthly_income -> R02 [arrowsize=1.2 color="#e67e22" fontcolor="#e67e22" penwidth=2.0 style=dashed xlabel=monthly_income]
+	{
+		rank=same
+		R01 [label="[ROOT] R01
+Compute LTV Ratio
+[COMPUTE]
+→ ltv_ratio" color="#1e8449" fillcolor="#27ae60" fontcolor="#ffffff"]
+		R02 [label="[ROOT] R02
+Compute DTI Ratio
+[COMPUTE]
+→ dti_ratio" color="#1e8449" fillcolor="#27ae60" fontcolor="#ffffff"]
+		R04 [label="[ROOT] R04
+Classify Credit Score Tier
+[LOOKUP]
+→ credit_tier" color="#1e8449" fillcolor="#27ae60" fontcolor="#ffffff"]
+		R07 [label="[ROOT] R07
+Base Rate Lookup
+[DECISION]
+→ base_rate" color="#1e8449" fillcolor="#27ae60" fontcolor="#ffffff"]
+		R11 [label="[ROOT] R11
+Employment Status Rate Adjustment
+[LOOKUP]
+→ employment_adj" color="#1e8449" fillcolor="#27ae60" fontcolor="#ffffff"]
+	}
+	{
+		rank=same
+		R03 [label="R03
+Classify LTV Tier
+[LOOKUP]
+→ ltv_tier" color="#1a5276" fillcolor="#2980b9" fontcolor="#ffffff"]
+		R05 [label="R05
+Classify DTI Tier
+[LOOKUP]
+→ dti_tier" color="#1a5276" fillcolor="#2980b9" fontcolor="#ffffff"]
+		R09 [label="R09
+Credit Score Rate Adjustment
+[LOOKUP]
+→ credit_rate_adj" color="#1a5276" fillcolor="#2980b9" fontcolor="#ffffff"]
+	}
+	{
+		rank=same
+		R06 [label="R06
+Check Basic Eligibility
+[DECISION]
+→ is_eligible" color="#1a5276" fillcolor="#2980b9" fontcolor="#ffffff"]
+		R08 [label="R08
+LTV Rate Adjustment
+[LOOKUP]
+→ ltv_rate_adj" color="#1a5276" fillcolor="#2980b9" fontcolor="#ffffff"]
+		R10 [label="R10
+DTI Rate Adjustment
+[LOOKUP]
+→ dti_rate_adj" color="#1a5276" fillcolor="#2980b9" fontcolor="#ffffff"]
+		R14 [label="R14
+Composite Risk Score
+[DECISION]
+→ risk_score" color="#1a5276" fillcolor="#2980b9" fontcolor="#ffffff"]
+	}
+	{
+		rank=same
+		R12 [label="R12
+Final Interest Rate Calculation
+[AGGREGATE]
+→ final_rate" color="#1a5276" fillcolor="#2980b9" fontcolor="#ffffff"]
+		R15 [label="[OUTPUT] R15
+Final Loan Decision
+[DECISION]
+→ decision, decision_reason" color="#922b21" fillcolor="#e74c3c" fontcolor="#ffffff"]
+	}
+	{
+		rank=same
+		R13 [label="[OUTPUT] R13
+Monthly Payment Calculation
+[COMPUTE]
+→ monthly_payment" color="#922b21" fillcolor="#e74c3c" fontcolor="#ffffff"]
+	}
+	R01 -> R03 [xlabel=ltv_ratio]
+	R02 -> R05 [xlabel=dti_ratio]
+	R03 -> R06 [xlabel=ltv_tier]
+	R03 -> R08 [xlabel=ltv_tier]
+	R03 -> R14 [xlabel=ltv_tier]
+	R04 -> R06 [xlabel=credit_tier]
+	R04 -> R09 [xlabel=credit_tier]
+	R04 -> R14 [xlabel=credit_tier]
+	R05 -> R10 [xlabel=dti_tier]
+	R05 -> R14 [xlabel=dti_tier]
+	R06 -> R15 [xlabel=is_eligible]
+	R07 -> R12 [xlabel=base_rate]
+	R08 -> R12 [xlabel=ltv_rate_adj]
+	R09 -> R12 [xlabel=credit_rate_adj]
+	R10 -> R12 [xlabel=dti_rate_adj]
+	R11 -> R12 [xlabel=employment_adj]
+	R12 -> R13 [xlabel=final_rate]
+	R14 -> R15 [xlabel=risk_score]
+	subgraph cluster_legend {
+		color="#aaaaaa" fillcolor="#f5f5f5" fontcolor="#333333" fontname=Helvetica fontsize=20 label=Legend style="filled,rounded"
+		L_root [label="ROOT
+(payload-fed)" color="#1e8449" fillcolor="#27ae60" fontcolor="#ffffff" fontsize=18 shape=box style="filled,rounded" width=2.5]
+		L_middle [label="INTERMEDIATE
+rule" color="#1a5276" fillcolor="#2980b9" fontcolor="#ffffff" fontsize=18 shape=box style="filled,rounded" width=2.5]
+		L_leaf [label="OUTPUT
+(terminal)" color="#922b21" fillcolor="#e74c3c" fontcolor="#ffffff" fontsize=18 shape=box style="filled,rounded" width=2.5]
+		L_root -> L_middle [style=invis]
+		L_middle -> L_leaf [style=invis]
+	}
+}

@@ -1,0 +1,19 @@
+{
+  "rule_id": "R05",
+  "name": "Classify DTI Tier",
+  "description": "Classify DTI ratio into risk tiers. DTI > 0.43 is typically above conventional loan limit.",
+  "inputs": ["dti_ratio"],
+  "outputs": ["dti_tier"],
+  "conditions": [],
+  "action": {
+    "type": "lookup",
+    "entries": [
+      {"condition": {"field": "dti_ratio", "op": "lt", "value": 0.28}, "result": "LOW"},
+      {"condition": {"field": "dti_ratio", "op": "lt", "value": 0.36}, "result": "ACCEPTABLE"},
+      {"condition": {"field": "dti_ratio", "op": "lt", "value": 0.43}, "result": "ELEVATED"}
+    ],
+    "default_result": "HIGH"
+  },
+  "priority": 8,
+  "tags": ["classification", "dti"]
+}

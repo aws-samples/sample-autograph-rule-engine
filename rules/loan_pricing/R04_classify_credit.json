@@ -1,0 +1,20 @@
+{
+  "rule_id": "R04",
+  "name": "Classify Credit Score Tier",
+  "description": "Classify FICO credit score into tiers: POOR (<580), FAIR (580-669), GOOD (670-739), VERY_GOOD (740-799), EXCEPTIONAL (>=800).",
+  "inputs": ["credit_score"],
+  "outputs": ["credit_tier"],
+  "conditions": [],
+  "action": {
+    "type": "lookup",
+    "entries": [
+      {"condition": {"field": "credit_score", "op": "lt", "value": 580}, "result": "POOR"},
+      {"condition": {"field": "credit_score", "op": "lt", "value": 670}, "result": "FAIR"},
+      {"condition": {"field": "credit_score", "op": "lt", "value": 740}, "result": "GOOD"},
+      {"condition": {"field": "credit_score", "op": "lt", "value": 800}, "result": "VERY_GOOD"}
+    ],
+    "default_result": "EXCEPTIONAL"
+  },
+  "priority": 8,
+  "tags": ["classification", "credit"]
+}

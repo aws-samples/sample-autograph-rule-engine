@@ -1,0 +1,34 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# CDK
+cdk.out/
+cdk.context.json
+
+# Build artifacts
+build/
+
+# Lambda invoke output
+response.json
+
+# IDE
+.idea/
+.vscode/
+*.swp

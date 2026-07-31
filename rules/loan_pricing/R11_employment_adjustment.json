@@ -1,0 +1,22 @@
+{
+  "rule_id": "R11",
+  "name": "Employment Status Rate Adjustment",
+  "description": "Rate adjustment based on employment stability. Self-employed and part-time carry higher risk.",
+  "inputs": ["employment_status"],
+  "outputs": ["employment_adj"],
+  "conditions": [],
+  "action": {
+    "type": "lookup",
+    "entries": [
+      {"condition": {"field": "employment_status", "op": "eq", "value": "FULL_TIME"},    "result":  0.0000},
+      {"condition": {"field": "employment_status", "op": "eq", "value": "PART_TIME"},    "result":  0.0050},
+      {"condition": {"field": "employment_status", "op": "eq", "value": "SELF_EMPLOYED"},"result":  0.0075},
+      {"condition": {"field": "employment_status", "op": "eq", "value": "CONTRACT"},     "result":  0.0050},
+      {"condition": {"field": "employment_status", "op": "eq", "value": "RETIRED"},      "result":  0.0025},
+      {"condition": {"field": "employment_status", "op": "eq", "value": "UNEMPLOYED"},   "result":  0.0300}
+    ],
+    "default_result": 0.0100
+  },
+  "priority": 6,
+  "tags": ["rate", "adjustment", "employment"]
+}

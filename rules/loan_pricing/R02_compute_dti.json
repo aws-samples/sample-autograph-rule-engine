@@ -1,0 +1,16 @@
+{
+  "rule_id": "R02",
+  "name": "Compute DTI Ratio",
+  "description": "Debt-to-Income ratio: monthly debt obligations as a fraction of gross monthly income.",
+  "inputs": ["monthly_debt", "monthly_income"],
+  "outputs": ["dti_ratio"],
+  "conditions": [
+    {"field": "monthly_income", "op": "gt", "value": 0}
+  ],
+  "action": {
+    "type": "compute",
+    "expression": "monthly_debt / monthly_income"
+  },
+  "priority": 10,
+  "tags": ["ratio", "core"]
+}

@@ -1,0 +1,20 @@
+{
+  "rule_id": "R08",
+  "name": "LTV Rate Adjustment",
+  "description": "Add a rate premium based on LTV tier. Higher LTV = higher rate to compensate for default risk.",
+  "inputs": ["ltv_tier"],
+  "outputs": ["ltv_rate_adj"],
+  "conditions": [],
+  "action": {
+    "type": "lookup",
+    "entries": [
+      {"condition": {"field": "ltv_tier", "op": "eq", "value": "LOW"},       "result": 0.0000},
+      {"condition": {"field": "ltv_tier", "op": "eq", "value": "MEDIUM"},    "result": 0.0025},
+      {"condition": {"field": "ltv_tier", "op": "eq", "value": "HIGH"},      "result": 0.0075},
+      {"condition": {"field": "ltv_tier", "op": "eq", "value": "VERY_HIGH"}, "result": 0.0150}
+    ],
+    "default_result": 0.0100
+  },
+  "priority": 6,
+  "tags": ["rate", "adjustment", "ltv"]
+}

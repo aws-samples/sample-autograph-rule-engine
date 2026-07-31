@@ -1,0 +1,15 @@
+{
+  "rule_id": "R12",
+  "name": "Final Interest Rate Calculation",
+  "description": "Sum base rate and all adjustments to compute the final offered interest rate.",
+  "inputs": ["base_rate", "ltv_rate_adj", "credit_rate_adj", "dti_rate_adj", "employment_adj"],
+  "outputs": ["final_rate"],
+  "conditions": [],
+  "action": {
+    "type": "aggregate",
+    "agg_func": "sum",
+    "fields": ["base_rate", "ltv_rate_adj", "credit_rate_adj", "dti_rate_adj", "employment_adj"]
+  },
+  "priority": 5,
+  "tags": ["rate", "final", "aggregate"]
+}
