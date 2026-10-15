@@ -23,6 +23,8 @@ from aws_cdk import (
     aws_s3 as s3,
     aws_s3_notifications as s3n,
     aws_lambda as _lambda,
+    aws_lambda_event_sources as lambda_events,
+    aws_sqs as sqs,
     aws_iam as iam,
     aws_logs as logs,
 )
@@ -182,7 +184,7 @@ class AutoGraphRuleEngineStack(Stack):
         deps_layer = _lambda.LayerVersion(
             self, "RuleEngineDepsLayer",
             code=_lambda.Code.from_asset("build/lambda_deps"),
-            compatible_runtimes=[_lambda.Runtime.PYTHON_3_13],
+            compatible_runtimes=[_lambda.Runtime.PYTHON_3_14],
             description="Dependencies for autograph-rule-engine (pydantic, simpleeval, networkx)",
         )
 
@@ -199,7 +201,7 @@ class AutoGraphRuleEngineStack(Stack):
         executor_lambda = _lambda.Function(
             self, "RuleExecutorLambda",
             function_name="autograph-graph-executor",
-            runtime=_lambda.Runtime.PYTHON_3_13,
+            runtime=_lambda.Runtime.PYTHON_3_14,
             handler="autograph_rule_engine.compute.graph_executor_handler.lambda_handler",
             code=_lambda.Code.from_asset(
                 "src",
@@ -250,7 +252,7 @@ class AutoGraphRuleEngineStack(Stack):
         generator_lambda = _lambda.Function(
             self, "GraphGeneratorLambda",
             function_name="autograph-graph-generator",
-            runtime=_lambda.Runtime.PYTHON_3_13,
+            runtime=_lambda.Runtime.PYTHON_3_14,
             handler="autograph_rule_engine.compute.graph_generator_handler.graph_generator_handler",
             code=_lambda.Code.from_asset(
                 "src",
@@ -259,6 +261,10 @@ class AutoGraphRuleEngineStack(Stack):
             layers=[deps_layer],
             timeout=Duration.seconds(120),
             memory_size=1024,
+            # Exactly one writer at a time. Neptune rejects concurrent writes to
+            # the same data with ConcurrentModificationException, and a bulk rule
+            # sync fans out one event per file.
+            reserved_concurrent_executions=1,
             environment={
                 "RULES_S3_BUCKET": rules_bucket.bucket_name,
                 "RULES_S3_PREFIX": "rules/loan_pricing/",
@@ -312,10 +318,52 @@ class AutoGraphRuleEngineStack(Stack):
         # ---------------------------------------------------------- #
         #  S3 Event Trigger: auto-publish on rule upload               #
         # ---------------------------------------------------------- #
+        # Rule uploads go through a queue rather than straight to Lambda.
+        # `aws s3 sync` emits one event per file, which previously meant one
+        # full graph rebuild per file, all at once. Batching collapses a bulk
+        # sync into a single rebuild, and the DLQ keeps events that exhaust
+        # their retries instead of dropping them silently.
+        rule_event_dlq = sqs.Queue(
+            self, "RuleEventDlq",
+            encryption=sqs.QueueEncryption.SQS_MANAGED,
+            enforce_ssl=True,
+            retention_period=Duration.days(14),
+        )
+
+        rule_event_queue = sqs.Queue(
+            self, "RuleEventQueue",
+            encryption=sqs.QueueEncryption.SQS_MANAGED,
+            enforce_ssl=True,
+            # Must exceed the generator's 120s timeout so a slow rebuild does
+            # not make the message visible to a second consumer mid-flight.
+            visibility_timeout=Duration.seconds(180),
+            dead_letter_queue=sqs.DeadLetterQueue(
+                max_receive_count=3,
+                queue=rule_event_dlq,
+            ),
+        )
+
         rules_bucket.add_event_notification(
             s3.EventType.OBJECT_CREATED,
-            s3n.LambdaDestination(generator_lambda),
+            s3n.SqsDestination(rule_event_queue),
             s3.NotificationKeyFilter(prefix="rules/", suffix=".json"),
+        )
+
+        # Deletions must rebuild too, otherwise a removed rule lingers in
+        # Neptune until some unrelated upload happens to trigger a rebuild.
+        rules_bucket.add_event_notification(
+            s3.EventType.OBJECT_REMOVED,
+            s3n.SqsDestination(rule_event_queue),
+            s3.NotificationKeyFilter(prefix="rules/", suffix=".json"),
+        )
+
+        generator_lambda.add_event_source(
+            lambda_events.SqsEventSource(
+                rule_event_queue,
+                batch_size=10,
+                max_batching_window=Duration.seconds(10),
+                report_batch_item_failures=True,
+            )
         )
 
         # ---------------------------------------------------------- #
@@ -331,7 +379,7 @@ class AutoGraphRuleEngineStack(Stack):
         query_lambda = _lambda.Function(
             self, "GraphQueryLambda",
             function_name="autograph-graph-query",
-            runtime=_lambda.Runtime.PYTHON_3_13,
+            runtime=_lambda.Runtime.PYTHON_3_14,
             handler="autograph_rule_engine.compute.graph_query_handler.lambda_handler",
             code=_lambda.Code.from_asset(
                 "src",
@@ -444,6 +492,9 @@ class AutoGraphRuleEngineStack(Stack):
         ])
         NagSuppressions.add_resource_suppressions(rules_bucket, [
             {"id": "AwsSolutions-S1", "reason": "S3 access logging not enabled. Bucket access is limited to Lambda (CloudWatch logs) and Publisher role (CloudTrail)."},
+        ])
+        NagSuppressions.add_resource_suppressions(rule_event_dlq, [
+            {"id": "AwsSolutions-SQS3", "reason": "This queue is itself the dead-letter queue for RuleEventQueue; chaining another DLQ onto it would have nowhere to terminate."},
         ])
 
         # ---------------------------------------------------------- #
