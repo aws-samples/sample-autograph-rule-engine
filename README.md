@@ -64,8 +64,7 @@ Or manually:
 ```bash
 # Setup
 python3 -m venv .venv
-.venv/bin/pip install -e ".[dev]"
-.venv/bin/pip install aws-cdk-lib constructs
+.venv/bin/pip install -e ".[dev,infra]"
 
 # Build Lambda dependency layer
 rm -rf build/lambda_deps && mkdir -p build/lambda_deps/python
@@ -73,7 +72,7 @@ rm -rf build/lambda_deps && mkdir -p build/lambda_deps/python
     --target build/lambda_deps/python \
     --platform manylinux2014_x86_64 \
     --implementation cp \
-    --python-version 3.13 \
+    --python-version 3.14 \
     --only-binary=:all:
 
 # Deploy
