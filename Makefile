@@ -6,8 +6,7 @@
 
 install:
 	python3 -m venv .venv
-	.venv/bin/pip install -e ".[dev]"
-	.venv/bin/pip install aws-cdk-lib constructs
+	.venv/bin/pip install -e ".[dev,infra]"
 
 test:
 	.venv/bin/pytest tests/ -v
@@ -25,7 +24,7 @@ layer:
 		--target build/lambda_deps/python \
 		--platform manylinux2014_x86_64 \
 		--implementation cp \
-		--python-version 3.13 \
+		--python-version 3.14 \
 		--only-binary=:all: \
 		--quiet
 
@@ -36,14 +35,13 @@ destroy:
 	cdk destroy --app ".venv/bin/python infra/app.py"
 
 publish-rules:
-	aws s3 sync rules/loan_pricing/ \
+	aws s3 sync --delete rules/loan_pricing/ \
 		s3://$$(aws cloudformation describe-stacks \
 			--stack-name AutoGraphRuleEngineStack \
 			--query "Stacks[0].Outputs[?OutputKey=='RulesBucketName'].OutputValue" \
 			--output text)/rules/loan_pricing/
-	@echo "Waiting for graph generator Lambda to complete..."
-	@sleep 15
-	@echo "Done. Graph should be available in S3."
+	@echo "Waiting for the graph generator to converge..."
+	@.venv/bin/python scripts/wait_for_graph.py
 
 invoke:
 	@aws lambda invoke \
