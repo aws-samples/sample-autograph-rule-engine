@@ -25,11 +25,54 @@ Usage:
 from __future__ import annotations
 import json
 import logging
-from typing import Any, Dict, List, Optional, Set
+import time
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from ..core.models import RuleGraph
 
 logger = logging.getLogger(__name__)
+
+# Neptune asks the caller to retry these — they signal a transient write
+# conflict between concurrent writers, not a malformed query.
+RETRYABLE_NEPTUNE_ERRORS = ("ConcurrentModificationException",)
+MAX_UPSERT_ATTEMPTS = 5
+INITIAL_BACKOFF_SECONDS = 0.2
+
+
+class NeptuneWriteConflictError(RuntimeError):
+    """Raised when Neptune writes keep conflicting after every retry."""
+
+
+def is_retryable_neptune_error(error: Exception) -> bool:
+    """True when Neptune signalled a transient conflict worth retrying."""
+    message = str(error)
+    return any(marker in message for marker in RETRYABLE_NEPTUNE_ERRORS)
+
+
+def rule_properties(rule) -> Dict[str, Any]:
+    """Neptune property map for a rule, excluding its identity properties."""
+    return {
+        "name": rule.name,
+        "description": rule.description or "",
+        "inputs": json.dumps(rule.inputs),
+        "outputs": json.dumps(rule.outputs),
+        "action_type": str(rule.action.type),
+        "priority": rule.priority,
+        "tags": json.dumps(rule.tags),
+        "enabled": rule.enabled,
+    }
+
+
+def expected_edges(rule_graph: RuleGraph) -> List[Tuple[str, str, List[str]]]:
+    """(from_id, to_id, via_fields) for every edge implied by the rule set."""
+    edges: List[Tuple[str, str, List[str]]] = []
+    for from_id, to_ids in rule_graph.edges.items():
+        for to_id in to_ids:
+            shared_fields = set(rule_graph.rules[from_id].outputs) & set(
+                rule_graph.rules[to_id].inputs
+            )
+            edges.append((from_id, to_id, sorted(shared_fields)))
+    return edges
 
 
 class NeptuneGraphBackend:
@@ -119,85 +162,195 @@ class NeptuneGraphBackend:
 
     def upsert_rule_graph(self, rule_graph: RuleGraph, namespace: str = "default"):
         """
-        Write all rules and edges into Neptune.
-        Uses upsert pattern (drop existing vertices with same rule_id + namespace,
-        then add fresh) to keep the graph in sync with rule JSON files.
+        Converge Neptune onto the state described by rule_graph.
+
+        Every write is match-or-create, so repeating this call — or running it
+        concurrently from several Lambda invocations — leaves exactly one copy
+        of the graph instead of appending duplicates. Vertices and edges that
+        the rule set no longer implies are pruned afterwards, so deleting a
+        rule JSON still removes it from Neptune.
 
         Args:
             rule_graph: The built RuleGraph.
             namespace:  Logical namespace to allow multiple rule sets in one cluster.
         """
-        logger.info(f"Upserting {len(rule_graph.rules)} rules into Neptune (namespace={namespace})")
+        logger.info(
+            f"Upserting {len(rule_graph.rules)} rules into Neptune (namespace={namespace})"
+        )
+        self._with_retry(lambda: self._converge_graph(rule_graph, namespace))
+        logger.info("Neptune upsert complete.")
 
-        # Drop existing vertices for this namespace
-        self._drop_namespace(namespace)
-
-        # Upsert rule vertices
+    def _converge_graph(self, rule_graph: RuleGraph, namespace: str):
+        """Write the desired state, then remove whatever is left over."""
         for rule_id, rule in rule_graph.rules.items():
             self._upsert_rule_vertex(rule_id, rule, namespace)
 
-        # Upsert payload field vertices
         for field in rule_graph.payload_fields:
             self._upsert_payload_vertex(field, namespace)
 
-        # Upsert edges
-        for from_id, to_ids in rule_graph.edges.items():
-            for to_id in to_ids:
-                shared_fields = set(rule_graph.rules[from_id].outputs) & set(
-                    rule_graph.rules[to_id].inputs
-                )
-                self._upsert_edge(from_id, to_id, sorted(shared_fields), namespace)
+        for from_id, to_id, via_fields in expected_edges(rule_graph):
+            self._upsert_edge(from_id, to_id, via_fields, namespace)
 
-        logger.info("Neptune upsert complete.")
+        self._prune_stale_edges(rule_graph, namespace)
+        self._prune_stale_vertices(rule_graph, namespace)
+
+    def _with_retry(self, operation):
+        """
+        Run operation, retrying transient Neptune write conflicts with backoff.
+
+        Neptune raises ConcurrentModificationException when writers collide and
+        explicitly asks the caller to retry; giving up silently is what let a
+        duplicated graph reach production.
+        """
+        last_error: Optional[Exception] = None
+
+        for attempt in range(1, MAX_UPSERT_ATTEMPTS + 1):
+            try:
+                return operation()
+            except Exception as error:
+                if not is_retryable_neptune_error(error):
+                    raise
+                last_error = error
+                if attempt == MAX_UPSERT_ATTEMPTS:
+                    break
+                backoff = INITIAL_BACKOFF_SECONDS * (2 ** (attempt - 1))
+                logger.warning(
+                    f"Neptune write conflict (attempt {attempt}/{MAX_UPSERT_ATTEMPTS}); "
+                    f"retrying in {backoff:.2f}s: {error}"
+                )
+                time.sleep(backoff)
+
+        raise NeptuneWriteConflictError(
+            f"Neptune write failed after {MAX_UPSERT_ATTEMPTS} attempts: {last_error}"
+        ) from last_error
 
     def _drop_namespace(self, namespace: str):
-        """Remove all vertices/edges for this namespace."""
+        """
+        Remove every vertex and edge for this namespace.
+
+        Destructive full wipe, deliberately NOT part of upsert_rule_graph —
+        concurrent drop-then-insert is what duplicated the graph. Kept for
+        explicit administrative resets only.
+        """
         self.g.V().has("namespace", namespace).drop().toList()
         logger.debug(f"Dropped namespace '{namespace}' from Neptune.")
 
     def _upsert_rule_vertex(self, rule_id: str, rule, namespace: str):
-        """Insert or update a Rule vertex in Neptune."""
-        (
-            self.g.addV("Rule")
-            .property("rule_id", rule_id)
-            .property("namespace", namespace)
-            .property("name", rule.name)
-            .property("description", rule.description or "")
-            .property("inputs", json.dumps(rule.inputs))
-            .property("outputs", json.dumps(rule.outputs))
-            .property("action_type", str(rule.action.type))
-            .property("priority", rule.priority)
-            .property("tags", json.dumps(rule.tags))
-            .property("enabled", rule.enabled)
-            .next()
+        """Match-or-create a Rule vertex, then refresh its properties."""
+        from gremlin_python.process.graph_traversal import __
+
+        traversal = (
+            self.g.V()
+            .has("Rule", "rule_id", rule_id)
+            .has("namespace", namespace)
+            .fold()
+            .coalesce(
+                __.unfold(),
+                __.addV("Rule")
+                .property("rule_id", rule_id)
+                .property("namespace", namespace),
+            )
         )
+        for key, value in rule_properties(rule).items():
+            traversal = traversal.property(key, value)
+        traversal.next()
 
     def _upsert_payload_vertex(self, field_name: str, namespace: str):
-        """Insert a PayloadField vertex."""
+        """Match-or-create a PayloadField vertex."""
+        from gremlin_python.process.graph_traversal import __
+
         (
-            self.g.addV("PayloadField")
-            .property("field_name", field_name)
-            .property("namespace", namespace)
+            self.g.V()
+            .has("PayloadField", "field_name", field_name)
+            .has("namespace", namespace)
+            .fold()
+            .coalesce(
+                __.unfold(),
+                __.addV("PayloadField")
+                .property("field_name", field_name)
+                .property("namespace", namespace),
+            )
             .next()
         )
 
     def _upsert_edge(self, from_id: str, to_id: str, via_fields: List[str], namespace: str):
-        """Insert a FEEDS edge between two Rule vertices."""
+        """Match-or-create a FEEDS edge between two Rule vertices."""
         from gremlin_python.process.graph_traversal import __
 
         (
             self.g.V()
             .has("Rule", "rule_id", from_id)
             .has("namespace", namespace)
-            .addE("FEEDS")
-            .to(
+            .outE("FEEDS")
+            .where(__.inV().has("Rule", "rule_id", to_id).has("namespace", namespace))
+            .fold()
+            .coalesce(
+                __.unfold(),
                 __.V()
-                .has("Rule", "rule_id", to_id)
+                .has("Rule", "rule_id", from_id)
                 .has("namespace", namespace)
+                .addE("FEEDS")
+                .to(
+                    __.V()
+                    .has("Rule", "rule_id", to_id)
+                    .has("namespace", namespace)
+                ),
             )
             .property("via", json.dumps(via_fields))
             .next()
         )
+
+    def _prune_stale_edges(self, rule_graph: RuleGraph, namespace: str):
+        """Drop FEEDS edges the current rule set no longer implies."""
+        wanted = {(from_id, to_id) for from_id, to_id, _ in expected_edges(rule_graph)}
+
+        for edge_id, pair in self._existing_edges(namespace).items():
+            if pair in wanted:
+                continue
+            logger.info(f"Pruning stale edge {pair[0]} -> {pair[1]}")
+            # toList() rather than iterate(): this gremlinpython version
+            # compiles iterate() to a `discard` step that Neptune rejects
+            # with InvalidParameterException.
+            self.g.E(edge_id).drop().toList()
+
+    def _existing_edges(self, namespace: str) -> Dict[Any, Tuple[str, str]]:
+        """Map edge id -> (from_rule_id, to_rule_id) for FEEDS edges in a namespace."""
+        from gremlin_python.process.graph_traversal import __
+
+        rows = (
+            self.g.V()
+            .has("Rule", "namespace", namespace)
+            .outE("FEEDS")
+            .project("id", "from", "to")
+            .by(__.id_())
+            .by(__.outV().values("rule_id"))
+            .by(__.inV().values("rule_id"))
+            .toList()
+        )
+        return {row["id"]: (row["from"], row["to"]) for row in rows}
+
+    def _prune_stale_vertices(self, rule_graph: RuleGraph, namespace: str):
+        """Drop Rule/PayloadField vertices the current rule set no longer contains."""
+        self._drop_vertices_not_in(
+            "Rule", "rule_id", sorted(rule_graph.rules), namespace
+        )
+        self._drop_vertices_not_in(
+            "PayloadField", "field_name", sorted(rule_graph.payload_fields), namespace
+        )
+
+    def _drop_vertices_not_in(
+        self, label: str, key: str, keep: List[str], namespace: str
+    ):
+        """Drop vertices of a label in this namespace whose key is not in keep."""
+        from gremlin_python.process.graph_traversal import __
+        from gremlin_python.process.traversal import P
+
+        traversal = self.g.V().has(label, "namespace", namespace)
+        if keep:
+            traversal = traversal.not_(__.has(key, P.within(*keep)))
+        # See _prune_stale_edges: iterate() compiles to an unsupported
+        # `discard` step on Neptune.
+        traversal.drop().toList()
 
     # ------------------------------------------------------------------ #
     #  Read: Query graph from Neptune                                      #
