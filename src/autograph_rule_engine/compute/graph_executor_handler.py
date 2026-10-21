@@ -81,6 +81,14 @@ logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 # ------------------------------------------------------------------ #
 _cached_graph = None
 _cached_graph_key: Optional[str] = None
+_cached_graph_etag: Optional[str] = None
+_cached_graph_version_id: Optional[str] = None
+_cached_graph_checked_at: float = 0.0
+
+# How long a cached graph is trusted before S3 is asked whether it changed. The check is a
+# conditional GET, so a 304 costs one round trip and no transfer; 0 revalidates every
+# invocation.
+REVALIDATE_SECONDS = float(os.environ.get("GRAPH_REVALIDATE_SECONDS", "30"))
 
 
 def _get_s3_client():
@@ -88,48 +96,96 @@ def _get_s3_client():
     return boto3.client("s3")
 
 
-def _load_graph_from_s3(bucket: str, key: str):
+def _load_graph_from_s3(bucket: str, key: str, if_none_match: Optional[str] = None):
     """
-    Download the pre-built, serialized RuleGraph from S3 and deserialize it.
+    Download the serialized RuleGraph from S3 and deserialize it.
 
-    The graph was published by deploy/graph_publisher.py at deploy time.
-    This avoids graph building at Lambda runtime — just deserialize and go.
+    Returns (graph, etag, version_id). When `if_none_match` is supplied and the object has
+    not changed, returns (None, if_none_match, None) so the caller keeps its cached copy.
     """
+    from botocore.exceptions import ClientError
     from autograph_rule_engine.core.models import RuleGraph
 
     s3 = _get_s3_client()
-    logger.info(f"Loading pre-built graph from s3://{bucket}/{key}")
 
-    response = s3.get_object(Bucket=bucket, Key=key)
+    kwargs = {"Bucket": bucket, "Key": key}
+    if if_none_match:
+        kwargs["IfNoneMatch"] = if_none_match
+
+    try:
+        response = s3.get_object(**kwargs)
+    except ClientError as error:
+        # S3 answers a conditional GET with 304, which botocore raises as a ClientError.
+        if error.response.get("Error", {}).get("Code") in ("304", "NotModified"):
+            logger.info("Graph unchanged in S3 (304); keeping the cached copy.")
+            return None, if_none_match, None
+        raise
+
     graph_json = response["Body"].read().decode("utf-8")
+    graph = RuleGraph.model_validate_json(graph_json)
 
-    # Deserialize using Pydantic
-    graph = RuleGraph.parse_raw(graph_json)
+    etag = response.get("ETag")
+    version_id = response.get("VersionId")
 
     logger.info(
-        f"Graph loaded: {len(graph.rules)} rules, "
-        f"execution order: {graph.execution_order}"
+        f"Graph loaded from s3://{bucket}/{key}: {len(graph.rules)} rules, "
+        f"etag={etag}, version_id={version_id}"
     )
-    return graph
+    return graph, etag, version_id
 
 
 def _get_or_load_graph(bucket: str, key: str, force_reload: bool = False):
-    """Return cached graph or load from S3."""
-    global _cached_graph, _cached_graph_key
+    """
+    Return the cached graph, revalidating against S3 when the TTL has elapsed.
+
+    The cache used to key on bucket/key alone — object *identity*, never content — so a warm
+    container served whatever it first loaded for the rest of its life, however many times
+    the graph was republished underneath it. The generator overwrites the same key in place
+    and has no way to signal running containers, so the only safe signal is asking S3.
+    """
+    global _cached_graph, _cached_graph_key, _cached_graph_etag
+    global _cached_graph_version_id, _cached_graph_checked_at
 
     cache_key = f"{bucket}/{key}"
+    now = time.monotonic()
+    cached_is_usable = _cached_graph is not None and _cached_graph_key == cache_key
 
-    if _cached_graph is not None and _cached_graph_key == cache_key and not force_reload:
-        logger.info("Using cached rule graph (warm invocation).")
-        return _cached_graph, 0.0
+    if cached_is_usable and not force_reload:
+        if now - _cached_graph_checked_at < REVALIDATE_SECONDS:
+            logger.info("Using cached rule graph (within revalidation window).")
+            return _cached_graph, 0.0
 
     start = time.perf_counter()
-    graph = _load_graph_from_s3(bucket, key)
+    graph, etag, version_id = _load_graph_from_s3(
+        bucket,
+        key,
+        if_none_match=_cached_graph_etag if cached_is_usable and not force_reload else None,
+    )
     load_ms = (time.perf_counter() - start) * 1000
+
+    _cached_graph_checked_at = now
+
+    if graph is None:
+        # 304 — unchanged; keep the cached graph but record that it was just checked.
+        return _cached_graph, load_ms
 
     _cached_graph = graph
     _cached_graph_key = cache_key
+    _cached_graph_etag = etag
+    _cached_graph_version_id = version_id
     return graph, load_ms
+
+
+def _graph_version() -> Optional[str]:
+    """
+    Identifier for the graph that answered this request.
+
+    The S3 ETag is already a content hash of the published artifact, so it needs no
+    separate version scheme: equal ETag means equal graph.
+    """
+    if _cached_graph_etag:
+        return _cached_graph_etag.strip('"')
+    return None
 
 
 def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
@@ -190,6 +246,9 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             "total_duration_ms": round(result.total_duration_ms, 3),
             "graph_load_ms": round(graph_load_ms, 3),
             "execution_order": graph.execution_order,
+            # Which graph produced this result. Without it there is no way to tell whether
+            # a response came from the current rule set or a stale cached one.
+            "graph_version": _graph_version(),
         }
 
         body = {

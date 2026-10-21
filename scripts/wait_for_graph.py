@@ -31,9 +31,20 @@ RULES_DIR = (
 )
 
 
-def expected_rule_count() -> int:
-    """Number of rule JSON files that should be present in the graph."""
-    return len(list(RULES_DIR.glob("*.json")))
+def expected_counts() -> tuple:
+    """
+    (rules, edges) the published graph should contain, built from the local rule files.
+
+    The rule count alone is not a sufficient convergence signal: it reaches its final
+    value while the edge upserts are still being applied, so polling on it can report
+    success over a half-written graph.
+    """
+    from autograph_rule_engine.core.graph_builder import GraphBuilder
+    from autograph_rule_engine.core.parser import RuleParser
+
+    graph = GraphBuilder().build(RuleParser().load_directory(RULES_DIR))
+    edges = sum(len(targets) for targets in graph.edges.values())
+    return len(graph.rules), edges
 
 
 def query_stats(client) -> dict:
@@ -52,8 +63,8 @@ def query_stats(client) -> dict:
 
 
 def main() -> int:
-    expected = expected_rule_count()
-    if expected == 0:
+    expected_rules, expected_edges = expected_counts()
+    if expected_rules == 0:
         print(f"ERROR: no rule JSON files found in {RULES_DIR}", file=sys.stderr)
         return 1
 
@@ -65,23 +76,27 @@ def main() -> int:
         try:
             stats = query_stats(client)
             last_stats = stats
-            actual = stats.get("num_rules")
+            rules = stats.get("num_rules")
+            edges = stats.get("num_edges")
 
-            if actual == expected:
-                print(f"Graph synced: {actual} rules, {stats.get('num_edges')} edges.")
+            if rules == expected_rules and edges == expected_edges:
+                print(f"Graph synced: {rules} rules, {edges} edges.")
                 return 0
 
-            # More rules than files means duplicate vertices, not slowness.
-            state = "duplicated" if actual and actual > expected else "incomplete"
-            print(f"Waiting — Neptune reports {actual} rules ({state}), expected {expected}.")
+            # More rules than the rule set holds means duplicate vertices, not slowness.
+            state = "duplicated" if rules and rules > expected_rules else "converging"
+            print(
+                f"Waiting - Neptune reports {rules} rules / {edges} edges ({state}); "
+                f"expected {expected_rules} / {expected_edges}."
+            )
         except Exception as error:
-            print(f"Waiting — query not ready yet: {error}")
+            print(f"Waiting - query not ready yet: {error}")
 
         time.sleep(POLL_INTERVAL_SECONDS)
 
     print(
-        f"ERROR: graph did not converge to {expected} rules within {TIMEOUT_SECONDS}s. "
-        f"Last stats: {last_stats}",
+        f"ERROR: graph did not converge to {expected_rules} rules / {expected_edges} edges "
+        f"within {TIMEOUT_SECONDS}s. Last stats: {last_stats}",
         file=sys.stderr,
     )
     return 1
