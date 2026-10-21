@@ -3,7 +3,7 @@
   "name": "Final Loan Decision",
   "description": "Final approve/decline/review decision based on eligibility and composite risk score.",
   "inputs": ["is_eligible", "risk_score"],
-  "outputs": ["decision", "decision_reason"],
+  "outputs": ["decision"],
   "conditions": [],
   "action": {
     "type": "decision",

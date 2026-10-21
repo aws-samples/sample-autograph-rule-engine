@@ -21,8 +21,9 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-from simpleeval import simple_eval, EvalWithCompoundTypes
+from simpleeval import SimpleEval
 
+from .expressions import ALLOWED_FUNCTIONS
 from .models import ActionType, Condition, OperatorType, Rule, RuleGraph
 
 logger = logging.getLogger(__name__)
@@ -271,8 +272,12 @@ class RuleExecutor:
         """
         expression = rule.action.expression
         try:
-            # simpleeval evaluates the expression safely with context as names
-            evaluator = EvalWithCompoundTypes(names=context)
+            # An explicit function table, rather than simpleeval's defaults, which include
+            # rand() and randint() — a rule able to call those produces a different result
+            # for the same payload on each run, which a decision engine cannot audit.
+            # SimpleEval rather than EvalWithCompoundTypes: no rule uses list/dict/set
+            # literals, so this also drops those constructors from the callable surface.
+            evaluator = SimpleEval(names=context, functions=ALLOWED_FUNCTIONS)
             result = evaluator.eval(expression)
         except Exception as e:
             raise ValueError(f"Expression '{expression}' failed: {e}")
@@ -293,14 +298,16 @@ class RuleExecutor:
         entries = rule.action.entries
         default = rule.action.default_result
 
-        result = default  # fallback
+        # Evaluation errors are NOT caught here. A missing field, an unknown operator or an
+        # incomparable type used to be indistinguishable from an entry that simply did not
+        # match, so the rule fell through to default_result and reported fired=True — a
+        # wrong answer presented as a successful one. Letting the error propagate turns it
+        # into a rule error, which _execute_rule records and which flips `success`.
+        result = default  # fallback when no entry matches
         for entry in entries:
-            try:
-                if self._evaluate_condition(entry.condition, context):
-                    result = entry.result
-                    break
-            except Exception:
-                continue  # skip entries with missing fields gracefully
+            if self._evaluate_condition(entry.condition, context):
+                result = entry.result
+                break
 
         if result is None:
             raise ValueError(
@@ -326,7 +333,20 @@ class RuleExecutor:
             val = context.get(f)
             if val is None:
                 raise ValueError(f"Aggregate field '{f}' not found in context.")
-            values.append(float(val))
+            # bool is a subclass of int, so float(True) is 1.0. Aggregating a boolean is
+            # almost always a modelling mistake, and silently turning it into a number
+            # hides that; a decision rule is the right tool for a boolean.
+            if isinstance(val, bool):
+                raise ValueError(
+                    f"Aggregate field '{f}' is a boolean ({val!r}); "
+                    "use a decision or lookup rule instead of aggregating it."
+                )
+            try:
+                values.append(float(val))
+            except (TypeError, ValueError):
+                raise ValueError(
+                    f"Aggregate field '{f}' is not numeric: {val!r} ({type(val).__name__})."
+                )
 
         if agg_func == "sum":
             result = sum(values)
@@ -359,18 +379,23 @@ class RuleExecutor:
         branches = rule.action.branches
         default = rule.action.default_result
 
+        # Every condition in a branch is evaluated, and errors are not caught.
+        #
+        # Previously the whole `all(...)` generator sat inside one try/except, so whether a
+        # broken condition was noticed depended on whether an earlier condition happened to
+        # be False and short-circuited past it — the same rule could silently drop a branch
+        # for one payload and evaluate it for another. Building the list first removes that
+        # order dependence; letting errors propagate turns a broken condition into a rule
+        # error rather than a silent fall-through to default_result.
         result = default
         for branch in branches:
-            try:
-                all_pass = all(
-                    self._evaluate_condition(cond, context)
-                    for cond in branch.conditions
-                )
-                if all_pass:
-                    result = branch.result
-                    break
-            except Exception:
-                continue
+            outcomes = [
+                self._evaluate_condition(cond, context)
+                for cond in branch.conditions
+            ]
+            if all(outcomes):
+                result = branch.result
+                break
 
         if result is None:
             raise ValueError(

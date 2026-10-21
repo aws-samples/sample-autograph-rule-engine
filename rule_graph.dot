@@ -14,14 +14,14 @@ digraph RuleEngine {
 		PAYLOAD_monthly_income [label="📥 monthly_income" color="#c0392b" fillcolor="#f39c12" fontcolor="#ffffff" fontsize=20 height=0.9 margin="0.3,0.2" shape=parallelogram style="filled,rounded" width=3.5]
 		PAYLOAD_property_value [label="📥 property_value" color="#c0392b" fillcolor="#f39c12" fontcolor="#ffffff" fontsize=20 height=0.9 margin="0.3,0.2" shape=parallelogram style="filled,rounded" width=3.5]
 	}
-	PAYLOAD_credit_score -> R04 [arrowsize=1.2 color="#e67e22" fontcolor="#e67e22" penwidth=2.0 style=dashed xlabel=credit_score]
 	PAYLOAD_employment_status -> R11 [arrowsize=1.2 color="#e67e22" fontcolor="#e67e22" penwidth=2.0 style=dashed xlabel=employment_status]
-	PAYLOAD_loan_amount -> R01 [arrowsize=1.2 color="#e67e22" fontcolor="#e67e22" penwidth=2.0 style=dashed xlabel=loan_amount]
-	PAYLOAD_property_value -> R01 [arrowsize=1.2 color="#e67e22" fontcolor="#e67e22" penwidth=2.0 style=dashed xlabel=property_value]
-	PAYLOAD_loan_type -> R07 [arrowsize=1.2 color="#e67e22" fontcolor="#e67e22" penwidth=2.0 style=dashed xlabel=loan_type]
-	PAYLOAD_loan_term_years -> R07 [arrowsize=1.2 color="#e67e22" fontcolor="#e67e22" penwidth=2.0 style=dashed xlabel=loan_term_years]
 	PAYLOAD_monthly_debt -> R02 [arrowsize=1.2 color="#e67e22" fontcolor="#e67e22" penwidth=2.0 style=dashed xlabel=monthly_debt]
 	PAYLOAD_monthly_income -> R02 [arrowsize=1.2 color="#e67e22" fontcolor="#e67e22" penwidth=2.0 style=dashed xlabel=monthly_income]
+	PAYLOAD_loan_type -> R07 [arrowsize=1.2 color="#e67e22" fontcolor="#e67e22" penwidth=2.0 style=dashed xlabel=loan_type]
+	PAYLOAD_loan_term_years -> R07 [arrowsize=1.2 color="#e67e22" fontcolor="#e67e22" penwidth=2.0 style=dashed xlabel=loan_term_years]
+	PAYLOAD_credit_score -> R04 [arrowsize=1.2 color="#e67e22" fontcolor="#e67e22" penwidth=2.0 style=dashed xlabel=credit_score]
+	PAYLOAD_loan_amount -> R01 [arrowsize=1.2 color="#e67e22" fontcolor="#e67e22" penwidth=2.0 style=dashed xlabel=loan_amount]
+	PAYLOAD_property_value -> R01 [arrowsize=1.2 color="#e67e22" fontcolor="#e67e22" penwidth=2.0 style=dashed xlabel=property_value]
 	{
 		rank=same
 		R01 [label="[ROOT] R01
@@ -88,7 +88,7 @@ Final Interest Rate Calculation
 		R15 [label="[OUTPUT] R15
 Final Loan Decision
 [DECISION]
-→ decision, decision_reason" color="#922b21" fillcolor="#e74c3c" fontcolor="#ffffff"]
+→ decision" color="#922b21" fillcolor="#e74c3c" fontcolor="#ffffff"]
 	}
 	{
 		rank=same
