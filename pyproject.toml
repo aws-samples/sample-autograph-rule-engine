@@ -8,11 +8,14 @@ version = "0.1.0"
 description = "Graph-based rule management system with auto-discovered dependencies"
 requires-python = ">=3.10"
 dependencies = [
-    "networkx>=3.0",
-    "gremlinpython>=3.6.0",
-    "pydantic>=2.0",
-    "simpleeval>=1.0",
-    "boto3>=1.26",
+    # Upper bounds so a major release cannot silently enter the environment. The Lambda
+    # layer pins exact versions in requirements-layer.txt; these bounds keep the local
+    # test environment in the same compatibility range.
+    "networkx>=3.0,<4",
+    "gremlinpython>=3.8,<3.9",
+    "pydantic>=2.9,<3",
+    "simpleeval>=1.0,<2",
+    "boto3>=1.26,<2",
 ]
 
 [project.optional-dependencies]

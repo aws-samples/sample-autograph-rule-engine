@@ -20,7 +20,10 @@ visualize:
 
 layer:
 	rm -rf build/lambda_deps && mkdir -p build/lambda_deps/python
-	.venv/bin/pip install pydantic simpleeval networkx gremlinpython \
+	# Pinned, with --no-deps, so the layer is reproducible. Unpinned installs re-resolve
+	# from PyPI on every deploy, which had already drifted the layer (pydantic 2.14.1)
+	# away from the test environment.
+	.venv/bin/pip install --no-deps -r requirements-layer.txt \
 		--target build/lambda_deps/python \
 		--platform manylinux2014_x86_64 \
 		--implementation cp \
