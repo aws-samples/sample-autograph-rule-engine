@@ -181,7 +181,7 @@ class AutoGraphRuleEngineStack(Stack):
             # snapshot and review `cdk diff` for REPLACE before attempting it.
             engine_version="1.3.1.0",
         )
-        neptune_cluster.add_dependency(neptune_subnet_group)
+        neptune_cluster.add_resource_dependency(neptune_subnet_group)
 
         # Neptune Serverless still requires at least one DB instance
         neptune_instance = neptune.CfnDBInstance(
@@ -190,7 +190,7 @@ class AutoGraphRuleEngineStack(Stack):
             db_cluster_identifier=neptune_cluster.ref,
             auto_minor_version_upgrade=True,
         )
-        neptune_instance.add_dependency(neptune_cluster)
+        neptune_instance.add_resource_dependency(neptune_cluster)
 
         # ---------------------------------------------------------- #
         #  S3 Bucket (serialized graph artifact)                       #

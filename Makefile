@@ -1,6 +1,25 @@
 .PHONY: install deploy destroy layer publish-rules invoke test visualize clean
 
 # --------------------------------------------------------------------------- #
+#  Region                                                                      #
+# --------------------------------------------------------------------------- #
+# Pinned to the same default as infra/app.py. Without this, `make deploy` used the
+# region pinned in the CDK app while `make invoke`, `make query`, `make publish-rules`
+# and `make destroy` used the aws CLI's ambient AWS_REGION — so with AWS_REGION set to
+# a different region, deploy succeeded in one region while every other target silently
+# queried an empty one, and `make destroy` appeared to do nothing while the real stack
+# kept billing.
+#
+# Plain `=`, not `?=`: make treats environment variables as already defined, so `?=`
+# would preserve an ambient AWS_REGION and change nothing. A Makefile assignment beats
+# the environment, while a command-line assignment still beats the Makefile.
+#
+# Override deliberately:  make deploy AWS_REGION=eu-west-1
+AWS_REGION = us-east-1
+export AWS_REGION
+export AWS_DEFAULT_REGION = $(AWS_REGION)
+
+# --------------------------------------------------------------------------- #
 #  Local Development                                                           #
 # --------------------------------------------------------------------------- #
 
