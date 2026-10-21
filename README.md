@@ -66,9 +66,12 @@ Or manually:
 python3 -m venv .venv
 .venv/bin/pip install -e ".[dev,infra]"
 
-# Build Lambda dependency layer
+# Build Lambda dependency layer.
+# Versions are pinned in requirements-layer.txt and installed with --no-deps so the
+# layer is reproducible; the rm -rf matters because pip --target only ever adds, so a
+# package dropped from the list would otherwise keep shipping.
 rm -rf build/lambda_deps && mkdir -p build/lambda_deps/python
-.venv/bin/pip install pydantic simpleeval networkx gremlinpython \
+.venv/bin/pip install --no-deps -r requirements-layer.txt \
     --target build/lambda_deps/python \
     --platform manylinux2014_x86_64 \
     --implementation cp \
@@ -105,6 +108,39 @@ make destroy    # or: cdk destroy
 | Graph Executor Lambda | Loads graph from S3, executes rules |
 | Graph Query Lambda | Reads from Neptune for impact analysis, dependency tracing, paths |
 | CloudWatch Log Groups | 14-day retention logs for all Lambdas |
+
+### Cost
+
+**This stack costs roughly $150/month even when you never invoke it.** Two always-on
+resources account for about 93% of that, and neither scales down with usage.
+
+On-demand rates, `us-east-1`, from the AWS Price List API (October 2026):
+
+| Item | Rate | Monthly (730 h) | Note |
+|---|---|---|---|
+| Neptune Serverless | $0.1608 / NCU-hour | **$117.38** | Billed at the 1-NCU floor 24/7, idle or not |
+| NAT Gateway | $0.045 / hour | **$32.85** | One gateway, always on |
+| NAT data processing | $0.045 / GB | ~$0.00 | Near zero now that S3 traffic uses the gateway endpoint |
+| Neptune storage | $0.100 / GB-month | ~$0.10 | The 15-rule graph is well under 1 GB |
+| Lambda, S3, SQS, CloudWatch Logs | usage-based | < $1 | Sample-scale traffic sits inside or near the free tiers |
+| | | **≈ $150** | |
+
+Worth understanding before you deploy:
+
+- **Neptune Serverless has a floor, not a zero.** Minimum capacity is 1 NCU, billed
+  continuously while the cluster exists. There is no scale-to-zero, so an idle deployment
+  bills the full $117/month. This is the single biggest cost decision in the stack.
+- **The NAT gateway is billed hourly regardless of traffic.** It exists so the in-VPC
+  functions can reach the internet; the S3 gateway endpoint removes the per-GB data
+  processing charge but not the hourly one.
+- **Scaling up is cheap by comparison.** `max_capacity` is 8 NCU, so a burst costs
+  `0.1608 × hours × NCUs` on top of the floor — the fixed floor dominates at sample scale.
+
+Tear down when you are done:
+
+```bash
+make destroy
+```
 
 ---
 
