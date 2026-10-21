@@ -91,6 +91,39 @@ def test_rule_vertex_upsert_is_match_or_create(backend, calls, loan_graph):
     assert "addV" not in calls, "addV must sit inside coalesce, not run unconditionally"
 
 
+def test_rule_properties_are_written_with_single_cardinality(backend, calls, loan_graph):
+    """
+    Neptune vertex properties default to set cardinality, so on a matched vertex a plain
+    property(k, v) appends instead of replacing. Editing a rule then leaves the stale value
+    alongside the new one — R15's `outputs` was observed holding both
+    '["decision", "decision_reason"]' and '["decision"]'.
+    """
+    from gremlin_python.process.traversal import Cardinality
+
+    seen = []
+
+    class Recording(FakeTraversal):
+        def __getattr__(self, name):
+            inner = super().__getattr__(name)
+
+            def step(*args, **kwargs):
+                if name == "property":
+                    seen.append(args)
+                return inner(*args, **kwargs)
+
+            return step
+
+    backend._g = Recording(calls)
+    backend._upsert_rule_vertex("R01", loan_graph.rules["R01"], "default")
+
+    refreshed = [args for args in seen if len(args) == 3]
+    assert refreshed, f"expected cardinality-qualified property writes, saw {seen}"
+    assert all(args[0] is Cardinality.single for args in refreshed)
+    # Identity properties are set inside addV(), which only runs on create, so they do
+    # not need a cardinality and must not be counted here.
+    assert {args[1] for args in refreshed} == set(rule_properties(loan_graph.rules["R01"]))
+
+
 def test_payload_vertex_upsert_is_match_or_create(backend, calls):
     backend._upsert_payload_vertex("loan_amount", "default")
 
@@ -105,6 +138,31 @@ def test_edge_upsert_is_match_or_create(backend, calls):
     assert "fold" in calls
     assert "coalesce" in calls
     assert "addE" not in calls, "addE must sit inside coalesce, not run unconditionally"
+
+
+def test_edge_upsert_writes_namespace(backend, calls):
+    """
+    Edges carried only `via`, so every query filtering edges by namespace matched nothing
+    — which is what made the Neptune topological sort silently wrong.
+    """
+    recorded = []
+
+    class Recording(FakeTraversal):
+        def __getattr__(self, name):
+            inner = super().__getattr__(name)
+
+            def step(*args, **kwargs):
+                if name == "property":
+                    recorded.append(args[0])
+                return inner(*args, **kwargs)
+
+            return step
+
+    backend._g = Recording(calls)
+    backend._upsert_edge("R01", "R03", ["ltv_ratio"], "default")
+
+    assert "namespace" in recorded, f"edge properties written: {recorded}"
+    assert "via" in recorded
 
 
 def test_upsert_writes_every_rule_and_edge(backend, loan_graph, monkeypatch):
@@ -255,3 +313,70 @@ def test_rule_properties_exclude_identity_fields(loan_graph):
     assert "namespace" not in props
     assert props["name"]
     assert props["enabled"] is True
+
+
+# ------------------------------------------------------------------ #
+#  Query correctness and traversal bounds                             #
+# ------------------------------------------------------------------ #
+
+class ScriptedTraversal(FakeTraversal):
+    """Returns a queued result for each successive toList() call."""
+
+    def __init__(self, calls, queued):
+        super().__init__(calls)
+        self._queued = list(queued)
+
+    def __getattr__(self, name):
+        def step(*args, **kwargs):
+            self.calls.append(name)
+            if name == "toList":
+                return self._queued.pop(0) if self._queued else []
+            if name == "next":
+                return self._queued.pop(0) if self._queued else 0
+            return self
+
+        return step
+
+
+def test_execution_order_filters_edges_by_label_and_namespace(backend, calls):
+    backend._g = ScriptedTraversal(calls, [[{"from": "A", "to": "B"}], ["A", "B"]])
+
+    assert backend.get_execution_order("default") == ["A", "B"]
+    assert "hasLabel" in calls, "edges must be filtered to FEEDS"
+
+
+def test_execution_order_raises_when_incomplete(backend, calls):
+    """
+    Kahn's algorithm only yields a full order on an acyclic graph. A short result used to
+    be returned anyway — all rules in arbitrary order, labelled as a topological sort.
+    """
+    cyclic = [{"from": "A", "to": "B"}, {"from": "B", "to": "A"}]
+    backend._g = ScriptedTraversal(calls, [cyclic, ["A", "B"]])
+
+    with pytest.raises(RuntimeError, match="topological order"):
+        backend.get_execution_order("default")
+
+
+def test_graph_stats_scopes_the_edge_count(backend, calls):
+    backend._g = ScriptedTraversal(calls, [15, 18, [], []])
+    stats = backend.get_graph_stats("default")
+
+    assert stats["num_edges"] == 18
+    assert "hasLabel" in calls, "the edge count must be restricted to FEEDS in this namespace"
+
+
+def test_find_paths_is_bounded(backend, calls):
+    backend._g = ScriptedTraversal(calls, [15, []])
+    backend.find_paths("R01", "R13", "default")
+
+    assert "limit" in calls, "an unreachable target must not enumerate the whole search space"
+
+
+def test_transitive_traversals_are_bounded(backend, calls, loan_graph):
+    for method in (backend.get_ancestors, backend.get_descendants):
+        calls.clear()
+        backend._g = ScriptedTraversal(calls, [15, []])
+        method("R15", "default")
+
+        assert "times" in calls, f"{method.__name__} must bound its repeat()"
+        assert "dedup" in calls
