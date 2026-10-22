@@ -111,6 +111,10 @@ def _dispatch_query(backend, query_type: str, event: dict, namespace: str) -> An
         }
 
     elif query_type == "paths":
+        # Imported here rather than at module scope, matching how the backend itself is
+        # imported lazily in this handler.
+        from autograph_rule_engine.backends.neptune_backend import MAX_PATH_RESULTS
+
         source = _require_field(event, "source_rule_id")
         target = _require_field(event, "target_rule_id")
         paths = backend.find_paths(source, target, namespace)
@@ -119,6 +123,18 @@ def _dispatch_query(backend, query_type: str, event: dict, namespace: str) -> An
             "target": target,
             "paths": paths,
             "count": len(paths),
+            # find_paths caps its result set, so say when the answer is partial rather
+            # than letting the caller read a truncated list as the complete one.
+            "truncated": len(paths) >= MAX_PATH_RESULTS,
+        }
+
+    elif query_type == "order":
+        # Exposed so the Neptune-side topological sort is reachable and therefore
+        # verifiable: it can be compared against the order baked into the S3 artifact.
+        order = backend.get_execution_order(namespace)
+        return {
+            "execution_order": order,
+            "count": len(order),
         }
 
     elif query_type == "stats":
@@ -135,7 +151,7 @@ def _dispatch_query(backend, query_type: str, event: dict, namespace: str) -> An
         return backend.get_all_rules(namespace)
 
     else:
-        valid = ["impact", "ancestors", "descendants", "paths", "stats", "rule", "rules"]
+        valid = ["impact", "ancestors", "descendants", "paths", "order", "stats", "rule", "rules"]
         raise ValueError(f"Unknown query type: '{query_type}'. Valid: {valid}")
 
 

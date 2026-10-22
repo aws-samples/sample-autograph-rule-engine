@@ -82,6 +82,14 @@ class AutoGraphRuleEngineStack(Stack):
             ),
         )
 
+        # S3 gateway endpoint: without it, every S3 call from an in-VPC function is routed
+        # through the single NAT gateway and billed as NAT data processing. A gateway
+        # endpoint is route-table based, costs nothing, and creates no ENIs.
+        vpc.add_gateway_endpoint(
+            "S3Endpoint",
+            service=ec2.GatewayVpcEndpointAwsService.S3,
+        )
+
         # ---------------------------------------------------------- #
         #  Security Groups                                            #
         # ---------------------------------------------------------- #
@@ -92,18 +100,41 @@ class AutoGraphRuleEngineStack(Stack):
             allow_all_outbound=False,
         )
 
-        lambda_sg = ec2.SecurityGroup(
-            self, "LambdaSG",
+        # One security group per function rather than one shared group, so that reaching
+        # Neptune is a property of the specific function. The executor reads the graph
+        # artifact from S3 and never queries Neptune, so it gets its own group and is not
+        # a peer in the ingress rules below.
+        generator_sg = ec2.SecurityGroup(
+            self, "GeneratorSG",
             vpc=vpc,
-            description="Lambda security group",
+            description="Graph generator Lambda - writes to Neptune",
             allow_all_outbound=True,
         )
 
-        # Lambda → Neptune on port 8182 (Gremlin/WebSocket)
+        query_sg = ec2.SecurityGroup(
+            self, "QuerySG",
+            vpc=vpc,
+            description="Graph query Lambda - reads from Neptune",
+            allow_all_outbound=True,
+        )
+
+        executor_sg = ec2.SecurityGroup(
+            self, "ExecutorSG",
+            vpc=vpc,
+            description="Graph executor Lambda - S3 only, no Neptune access",
+            allow_all_outbound=True,
+        )
+
+        # Only the generator and query functions reach Gremlin on 8182.
         neptune_sg.add_ingress_rule(
-            peer=lambda_sg,
+            peer=generator_sg,
             connection=ec2.Port.tcp(8182),
-            description="Lambda to Neptune Gremlin",
+            description="Graph generator to Neptune Gremlin (read/write)",
+        )
+        neptune_sg.add_ingress_rule(
+            peer=query_sg,
+            connection=ec2.Port.tcp(8182),
+            description="Graph query to Neptune Gremlin (read-only)",
         )
 
         # ---------------------------------------------------------- #
@@ -124,7 +155,18 @@ class AutoGraphRuleEngineStack(Stack):
             self, "NeptuneCluster",
             db_subnet_group_name=neptune_subnet_group.ref,
             vpc_security_group_ids=[neptune_sg.security_group_id],
-            iam_auth_enabled=False,  # gremlinpython doesn't support SigV4; VPC + SG provides isolation
+            # IAM database authentication is not enabled. Access is constrained by network
+            # topology: the cluster sits in PRIVATE_ISOLATED subnets with no route to an
+            # internet or NAT gateway, and the only ingress rules on 8182 name the generator
+            # and query function security groups as peers — nothing else in the account has
+            # a network path to it.
+            #
+            # Enabling IAM auth is a separate change: gremlinpython 3.8 can sign the
+            # WebSocket handshake (it forwards `headers=` to aiohttp), but the driver reuses
+            # those headers on every pool reconnect while a SigV4 signature expires after
+            # 5 minutes, so it also needs re-signing on 403 to avoid intermittent failures
+            # in warm containers.
+            iam_auth_enabled=False,
             storage_encrypted=True,
             deletion_protection=False,  # Set True for production
             backup_retention_period=7,
@@ -132,9 +174,14 @@ class AutoGraphRuleEngineStack(Stack):
                 min_capacity=1.0,
                 max_capacity=8.0,
             ),
+            # Reaches end of life 2027-03-06. Upgrading is deliberately a separate change:
+            # an in-place major upgrade requires declaring cluster AND instance parameter
+            # groups on the new engine family, and setting allow_major_version_upgrade on an
+            # existing cluster makes CloudFormation replace it with a new, empty one. Take a
+            # snapshot and review `cdk diff` for REPLACE before attempting it.
             engine_version="1.3.1.0",
         )
-        neptune_cluster.add_dependency(neptune_subnet_group)
+        neptune_cluster.add_resource_dependency(neptune_subnet_group)
 
         # Neptune Serverless still requires at least one DB instance
         neptune_instance = neptune.CfnDBInstance(
@@ -143,7 +190,7 @@ class AutoGraphRuleEngineStack(Stack):
             db_cluster_identifier=neptune_cluster.ref,
             auto_minor_version_upgrade=True,
         )
-        neptune_instance.add_dependency(neptune_cluster)
+        neptune_instance.add_resource_dependency(neptune_cluster)
 
         # ---------------------------------------------------------- #
         #  S3 Bucket (serialized graph artifact)                       #
@@ -220,7 +267,7 @@ class AutoGraphRuleEngineStack(Stack):
             vpc_subnets=ec2.SubnetSelection(
                 subnet_type=ec2.SubnetType.PRIVATE_WITH_EGRESS,
             ),
-            security_groups=[lambda_sg],
+            security_groups=[executor_sg],
         )
 
         # Executor reads graph from S3 — specific object only
@@ -278,7 +325,7 @@ class AutoGraphRuleEngineStack(Stack):
             vpc_subnets=ec2.SubnetSelection(
                 subnet_type=ec2.SubnetType.PRIVATE_WITH_EGRESS,
             ),
-            security_groups=[lambda_sg],
+            security_groups=[generator_sg],
         )
 
         # Generator reads rules from S3
@@ -397,7 +444,7 @@ class AutoGraphRuleEngineStack(Stack):
             vpc_subnets=ec2.SubnetSelection(
                 subnet_type=ec2.SubnetType.PRIVATE_WITH_EGRESS,
             ),
-            security_groups=[lambda_sg],
+            security_groups=[query_sg],
         )
 
         # Query Lambda reads from Neptune (read-only)
@@ -416,11 +463,18 @@ class AutoGraphRuleEngineStack(Stack):
         # ---------------------------------------------------------- #
         #  Graph Publisher Role (for deploy-time CLI/CI)               #
         # ---------------------------------------------------------- #
+        # AccountRootPrincipal alone would let any principal in the account that can call
+        # sts:AssumeRole take on a role with Neptune write and S3 write. The ExternalId
+        # condition makes assumption deliberate rather than ambient; override it with
+        # `cdk deploy -c publisherExternalId=<value>`.
+        publisher_external_id = (
+            self.node.try_get_context("publisherExternalId") or "autograph-graph-publisher"
+        )
         publisher_role = iam.Role(
             self, "GraphPublisherRole",
-            assumed_by=iam.CompositePrincipal(
-                iam.AccountRootPrincipal(),
-            ),
+            assumed_by=iam.AccountRootPrincipal().with_conditions({
+                "StringEquals": {"sts:ExternalId": publisher_external_id},
+            }),
             description="Role for graph_publisher CLI to write to Neptune and S3",
         )
 
@@ -484,7 +538,7 @@ class AutoGraphRuleEngineStack(Stack):
         NagSuppressions.add_resource_suppressions_by_path(
             self,
             f"/{construct_id}/NeptuneCluster",
-            [{"id": "AwsSolutions-N5", "reason": "Neptune IAM auth disabled because gremlinpython does not support SigV4 signing. Neptune is deployed in isolated subnets with no internet access; only the Lambda security group can reach port 8182."}],
+            [{"id": "AwsSolutions-N5", "reason": "IAM database authentication is not enabled; access is constrained by network topology instead. The cluster is in PRIVATE_ISOLATED subnets with no route to an internet or NAT gateway, and the only ingress rules on port 8182 name the graph generator and graph query function security groups as peers - no other principal in the account has a network path to the cluster. The executor function, which reads the graph artifact from S3 and never queries Neptune, has its own security group and is not a peer. Enabling IAM auth is tracked as a separate change: it additionally requires SigV4-signed WebSocket handshakes with re-signing on 403, because the driver reuses handshake headers across connection-pool reconnects while a signature expires after 5 minutes."}],
         )
 
         NagSuppressions.add_resource_suppressions(graph_bucket, [

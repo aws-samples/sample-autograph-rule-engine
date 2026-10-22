@@ -105,7 +105,7 @@ def handler(event, context):
     
     # 1. Graph stats
     num_rules = g.V().has("Rule", "namespace", namespace).count().next()
-    num_edges = g.E().count().next()
+    num_edges = g.E().hasLabel("FEEDS").has("namespace", namespace).count().next()
     root_rules = g.V().has("Rule", "namespace", namespace).where(__.not_(__.in_("FEEDS"))).values("rule_id").toList()
     leaf_rules = g.V().has("Rule", "namespace", namespace).where(__.not_(__.out("FEEDS"))).values("rule_id").toList()
     
@@ -142,7 +142,7 @@ def handler(event, context):
     results["paths_R01_to_R13"] = [list(p) for p in paths]
     
     # 5. All edges (data flow)
-    edges = g.E().has("via").project("from", "to", "via").by(__.outV().values("rule_id")).by(__.inV().values("rule_id")).by("via").toList()
+    edges = g.E().hasLabel("FEEDS").has("namespace", namespace).project("from", "to", "via").by(__.outV().values("rule_id")).by(__.inV().values("rule_id")).by("via").toList()
     results["data_flows"] = [{"from": e["from"], "to": e["to"], "via": e["via"]} for e in edges[:20]]
     
     conn.close()

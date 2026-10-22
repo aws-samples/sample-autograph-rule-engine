@@ -38,6 +38,11 @@ RETRYABLE_NEPTUNE_ERRORS = ("ConcurrentModificationException",)
 MAX_UPSERT_ATTEMPTS = 5
 INITIAL_BACKOFF_SECONDS = 0.2
 
+# Cap on paths returned by find_paths. The number of simple paths between two rules grows
+# combinatorially with the number of distinct routes, so an unbounded traversal can take
+# far longer than the caller's timeout on a graph that is otherwise small.
+MAX_PATH_RESULTS = 100
+
 
 class NeptuneWriteConflictError(RuntimeError):
     """Raised when Neptune writes keep conflicting after every retry."""
@@ -238,6 +243,7 @@ class NeptuneGraphBackend:
     def _upsert_rule_vertex(self, rule_id: str, rule, namespace: str):
         """Match-or-create a Rule vertex, then refresh its properties."""
         from gremlin_python.process.graph_traversal import __
+        from gremlin_python.process.traversal import Cardinality
 
         traversal = (
             self.g.V()
@@ -251,8 +257,14 @@ class NeptuneGraphBackend:
                 .property("namespace", namespace),
             )
         )
+        # Cardinality.single is required, not cosmetic: Neptune vertex properties default
+        # to set cardinality, so on a *matched* vertex a plain property(k, v) ADDS a value
+        # instead of replacing it. Editing a rule would then leave the old value alongside
+        # the new one — observed on R15, whose `outputs` held both
+        # '["decision", "decision_reason"]' and '["decision"]'. Reading such a vertex back
+        # yields a list of stale and current values with no way to tell them apart.
         for key, value in rule_properties(rule).items():
-            traversal = traversal.property(key, value)
+            traversal = traversal.property(Cardinality.single, key, value)
         traversal.next()
 
     def _upsert_payload_vertex(self, field_name: str, namespace: str):
@@ -296,6 +308,10 @@ class NeptuneGraphBackend:
                     .has("namespace", namespace)
                 ),
             )
+            # Applied after coalesce, so it lands on matched edges too — one publish
+            # backfills namespace onto edges created before this property existed.
+            # Without it, any query filtering edges by namespace matches nothing.
+            .property("namespace", namespace)
             .property("via", json.dumps(via_fields))
             .next()
         )
@@ -321,6 +337,9 @@ class NeptuneGraphBackend:
             self.g.V()
             .has("Rule", "namespace", namespace)
             .outE("FEEDS")
+            # Both endpoints must be in this namespace, or an edge crossing namespaces
+            # would be reported as belonging to this one and pruned against the wrong set.
+            .where(__.inV().has("Rule", "namespace", namespace))
             .project("id", "from", "to")
             .by(__.id_())
             .by(__.outV().values("rule_id"))
@@ -382,14 +401,18 @@ class NeptuneGraphBackend:
         All upstream rules (transitive) that rule_id depends on.
         Uses Gremlin repeat() traversal to walk edges backwards.
         """
+        # simplePath() stops a path revisiting a vertex, and times() bounds the loop: without
+        # either, a cycle reachable in Neptune during a partial write would spin until the
+        # query times out. dedup() before values() dedups vertices rather than strings.
         results = (
             self.g.V()
             .has("Rule", "rule_id", rule_id)
             .has("namespace", namespace)
-            .repeat(__.in_("FEEDS"))
+            .repeat(__.in_("FEEDS").simplePath())
             .emit()
-            .values("rule_id")
+            .times(self._max_depth(namespace))
             .dedup()
+            .values("rule_id")
             .toList()
         )
         return results
@@ -399,17 +422,30 @@ class NeptuneGraphBackend:
         All downstream rules (transitive) that depend on rule_id.
         Uses Gremlin repeat() traversal to walk edges forwards.
         """
+        # See get_ancestors: bounded for the same reason, in the other direction.
         results = (
             self.g.V()
             .has("Rule", "rule_id", rule_id)
             .has("namespace", namespace)
-            .repeat(__.out("FEEDS"))
+            .repeat(__.out("FEEDS").simplePath())
             .emit()
-            .values("rule_id")
+            .times(self._max_depth(namespace))
             .dedup()
+            .values("rule_id")
             .toList()
         )
         return results
+
+    def _max_depth(self, namespace: str) -> int:
+        """
+        Loop bound for transitive traversals.
+
+        An acyclic graph cannot have a path longer than its rule count, so this bounds the
+        loop without truncating a legitimate answer. It also means a cycle — which the
+        validator rejects before publishing, but which is briefly observable in Neptune
+        during a partial write — terminates instead of running until the query timeout.
+        """
+        return max(1, self.g.V().has("Rule", "namespace", namespace).count().next())
 
     def get_root_rules(self, namespace: str = "default") -> List[str]:
         """Rules with no incoming FEEDS edges (payload-fed root rules)."""
@@ -443,7 +479,8 @@ class NeptuneGraphBackend:
         # (Full graph-DB-native topo sort in Gremlin is complex; hybrid approach is practical)
         edges_raw = (
             self.g.E()
-            .has("namespace", namespace)  # edges inherit namespace via adjacent vertices
+            .hasLabel("FEEDS")
+            .has("namespace", namespace)
             .project("from", "to")
             .by(__.outV().values("rule_id"))
             .by(__.inV().values("rule_id"))
@@ -477,6 +514,18 @@ class NeptuneGraphBackend:
                 if in_degree[neighbor] == 0:
                     queue.append(neighbor)
 
+        # Kahn's algorithm only yields a complete order when the graph is acyclic. A short
+        # result means a cycle (or unreachable component), and returning it anyway would be
+        # a wrong answer presented as a topological order — which is exactly what happened
+        # while the edge query above silently matched nothing.
+        if len(order) != len(all_rule_ids):
+            missing = sorted(set(all_rule_ids) - set(order))
+            raise RuntimeError(
+                f"Could not compute a topological order for namespace '{namespace}': "
+                f"ordered {len(order)} of {len(all_rule_ids)} rules; "
+                f"cycle or unreachable rules involving {missing}"
+            )
+
         return order
 
     def get_impact(self, rule_id: str, namespace: str = "default") -> Dict[str, Any]:
@@ -491,17 +540,47 @@ class NeptuneGraphBackend:
         }
 
     def find_paths(
-        self, source_rule_id: str, target_rule_id: str, namespace: str = "default"
+        self,
+        source_rule_id: str,
+        target_rule_id: str,
+        namespace: str = "default",
+        max_hops: Optional[int] = None,
+        max_results: int = MAX_PATH_RESULTS,
     ) -> List[List[str]]:
-        """Find all paths from source to target using Gremlin path traversal."""
+        """
+        Find paths from source to target, bounded.
+
+        Unbounded, this enumerates every simple path in the namespace; an unreachable
+        target is the worst case, because the traversal exhausts the whole search space
+        before returning nothing. Both bounds below are required to keep that within the
+        caller's timeout.
+
+        The break condition is a disjunction rather than `until(...).times(...)`: giving one
+        repeat() both modulators is ambiguous in TinkerPop — the later one wins as the break
+        condition — which would quietly turn this into a fixed-depth search. The trailing
+        has() then discards paths that stopped because they hit the hop cap rather than
+        because they reached the target.
+        """
+        from gremlin_python.process.traversal import P
+
+        if max_hops is None:
+            max_hops = self.g.V().has("Rule", "namespace", namespace).count().next()
+
         results = (
             self.g.V()
             .has("Rule", "rule_id", source_rule_id)
             .has("namespace", namespace)
             .repeat(__.out("FEEDS").simplePath())
-            .until(__.has("rule_id", target_rule_id))
+            .until(
+                __.or_(
+                    __.has("rule_id", target_rule_id),
+                    __.loops().is_(P.gte(max_hops)),
+                )
+            )
+            .has("rule_id", target_rule_id)
             .path()
             .by("rule_id")
+            .limit(max_results)
             .toList()
         )
         return [list(p) for p in results]
@@ -512,7 +591,11 @@ class NeptuneGraphBackend:
             self.g.V().has("Rule", "namespace", namespace).count().next()
         )
         num_edges = (
-            self.g.E().count().next()  # approximate: namespace filter on edges is complex
+            self.g.E()
+            .hasLabel("FEEDS")
+            .has("namespace", namespace)
+            .count()
+            .next()
         )
         root_rules = self.get_root_rules(namespace)
         leaf_rules = self.get_leaf_rules(namespace)

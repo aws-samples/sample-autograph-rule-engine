@@ -32,3 +32,6 @@ response.json
 .idea/
 .vscode/
 *.swp
+
+# Review correspondence - deliberately not committed
+review-response.md
